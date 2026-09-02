@@ -45,6 +45,10 @@ function Invoke-Native {
         $proc = Start-Process -FilePath $Exe -ArgumentList $Arguments -NoNewWindow -PassThru `
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile
 
+        # Windows PowerShell 5.1 leaves $proc.ExitCode $null unless the process
+        # handle was touched before the process exits. Cache it now.
+        $null = $proc.Handle
+
         if ($TimeoutSeconds -gt 0) {
             if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
                 try { $proc.Kill() } catch {}
