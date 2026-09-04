@@ -1,4 +1,4 @@
-# cswap-profile-token-refresher
+# cswap-token-refresher
 
 Cycle through every [`cswap`](https://github.com/realiti4/claude-swap)-managed Claude profile, make a
 tiny `claude` API call on each one whose refresh token is close to expiring, then
@@ -47,12 +47,12 @@ Credentials file:
 
 ```sh
 # Windows / Linux / macOS
-python ./cswap-profile-token-refresher.py
+python ./cswap-token-refresher.py
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -File "./cswap-profile-token-refresher.ps1"
+powershell -ExecutionPolicy Bypass -File "./cswap-token-refresher.ps1"
 ```
 
 ### Configuration
@@ -86,7 +86,7 @@ crontab -e
 Add one line — this runs every day at 09:00 and appends output to a log:
 
 ```cron
-0 9 * * * /usr/bin/python3 /path/to/cswap-profile-token-refresher/cswap-profile-token-refresher.py >> /path/to/cswap-refresher.log 2>&1
+0 9 * * * /usr/bin/python3 /path/to/cswap-token-refresher/cswap-token-refresher.py >> /path/to/cswap-refresher.log 2>&1
 ```
 
 If `cswap` / `claude` are not on the cron `PATH` (common when installed under
@@ -95,7 +95,7 @@ at the top of the crontab or inline:
 
 ```cron
 PATH=/usr/local/bin:/usr/bin:/bin:/home/youruser/.local/bin
-0 9 * * * cd /path/to/cswap-profile-token-refresher && /usr/bin/python3 cswap-profile-token-refresher.py >> /path/to/cswap-refresher.log 2>&1
+0 9 * * * cd /path/to/cswap-token-refresher && /usr/bin/python3 cswap-token-refresher.py >> /path/to/cswap-refresher.log 2>&1
 ```
 
 Verify with `crontab -l`. On macOS the first run may prompt to grant `cron` (or
@@ -111,7 +111,7 @@ Description=Refresh cswap-managed Claude profile tokens
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /path/to/cswap-profile-token-refresher/cswap-profile-token-refresher.py
+ExecStart=/usr/bin/python3 /path/to/cswap-token-refresher/cswap-token-refresher.py
 ```
 
 and `~/.config/systemd/user/cswap-refresher.timer`:
@@ -144,10 +144,10 @@ Register a daily task from an elevated PowerShell prompt. This uses the
 PowerShell script; swap in `python` + the `.py` path if you prefer.
 
 ```powershell
-$dir = "C:\path\to\cswap-profile-token-refresher"
+$dir = "C:\path\to\cswap-token-refresher"
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$dir\cswap-profile-token-refresher.ps1`"" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$dir\cswap-token-refresher.ps1`"" `
     -WorkingDirectory $dir
 
 $trigger = New-ScheduledTaskTrigger -Daily -At 9am
@@ -175,7 +175,7 @@ Unregister-ScheduledTask -TaskName "cswap token refresher" -Confirm:$false
 ```
 
 To capture output, point the action at a wrapper that redirects, e.g.
-`-Argument "-NoProfile -ExecutionPolicy Bypass -Command `"& '$dir\cswap-profile-token-refresher.ps1' *>&1 | Out-File -Append '$dir\cswap-refresher.log'`""`.
+`-Argument "-NoProfile -ExecutionPolicy Bypass -Command `"& '$dir\cswap-token-refresher.ps1' *>&1 | Out-File -Append '$dir\cswap-refresher.log'`""`.
 
 If `cswap` / `claude` are not on the system `PATH` seen by the scheduler,
 prepend their folder inside such a wrapper (`$env:PATH = 'C:\Users\you\AppData\Roaming\npm;' + $env:PATH`)
@@ -185,27 +185,27 @@ before invoking the script.
 
 ```
 ==> cswap list --json
-Found 3 profile(s): 1, 2, 3
-Original active profile: 2
+Found 3 profile(s): 1 (email1@example.com), 2 (email2@example.com), 3 (email3@example.com)
+Original active profile: 2 (email2@example.com)
 
-==> cswap switch 1
+==> cswap switch 1 (email1@example.com)
 ==> claude -p "Reply exactly: Claude Code is OK"
 Claude Code is OK
-profile 1: OK (no refresh needed, refreshTokenExpiresAt unchanged at 2026-09-09T06:52:26+00:00, 2.1d left)
+Profile 1: OK (no refresh needed, refreshTokenExpiresAt unchanged at 2026-09-09T06:52:26+00:00, 2.1d left)
 
-==> cswap switch 2
-profile 2: OK (fresh, 17.1d left)
+==> cswap switch 2 (email2@example.com)
+Profile 2: OK (fresh, 17.1d left)
 
-==> cswap switch 3
-profile 3: OK (fresh, 23.3d left)
+==> cswap switch 3 (email3@example.com)
+Profile 3: OK (fresh, 23.3d left)
 
-==> restoring original active profile: cswap switch 2
+==> restoring original active profile: cswap switch 2 (email2@example.com)
 
 ==================== Summary ====================
-  profile 1: OK (no refresh needed, refreshTokenExpiresAt unchanged at 2026-09-09T06:52:26+00:00, 2.1d left)
-  profile 2: OK (fresh, 17.1d left)
-  profile 3: OK (fresh, 23.3d left)
-  restore -> profile 2: OK
+  Profile 1: OK (no refresh needed, refreshTokenExpiresAt unchanged at 2026-09-09T06:52:26+00:00, 2.1d left), email1@example.com
+  Profile 2: OK (fresh, 17.1d left), email2@example.com
+  Profile 3: OK (fresh, 23.3d left), email3@example.com
+  restore -> Profile 2 (email2@example.com): OK
 ```
 
 ## License  

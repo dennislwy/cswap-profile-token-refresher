@@ -19,11 +19,46 @@
 param(
     [int]$WithinDays = 4,
     [string]$Prompt = "Reply exactly: Claude Code is OK",
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+
+    # If set, tee this run's console output to a dated file in this directory
+    # (created if needed) and delete files older than -LogRetentionDays.
+    [string]$LogDir,
+    [int]$LogRetentionDays = 14
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# --- Optional run log ---------------------------------------------------------
+$script:TranscriptOn = $false
+
+function Stop-Log {
+    if ($script:TranscriptOn) {
+        try { Stop-Transcript | Out-Null } catch {}
+        $script:TranscriptOn = $false
+    }
+}
+
+if ($LogDir) {
+    try {
+        New-Item -ItemType Directory -Force -Path $LogDir -ErrorAction Stop | Out-Null
+
+        if ($LogRetentionDays -gt 0) {
+            $cutoff = (Get-Date).AddDays(-$LogRetentionDays)
+            Get-ChildItem -LiteralPath $LogDir -Filter 'cswap-refresher_*.log' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -lt $cutoff } |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+
+        $logFile = Join-Path $LogDir ("cswap-refresher_{0:yyyy-MM-dd_HHmmss}.log" -f (Get-Date))
+        Start-Transcript -LiteralPath $logFile -Force | Out-Null
+        $script:TranscriptOn = $true
+    }
+    catch {
+        Write-Warning "Could not start log in '$LogDir': $($_.Exception.Message)"
+    }
+}
 
 function Get-CredentialsPath {
     # $env:USERPROFILE is set on Windows only; fall back to $HOME elsewhere.
@@ -31,13 +66,26 @@ function Get-CredentialsPath {
     return (Join-Path $base ".claude/.credentials.json")
 }
 
+# Number -> email, populated from `cswap list --json`. Used only for display.
+$script:EmailByNumber = @{}
+
+function Format-Profile {
+    param($Number)
+    $key = [string]$Number
+    if ($key -and $script:EmailByNumber.Contains($key)) {
+        return "$Number ($($script:EmailByNumber[$key]))"
+    }
+    return "$Number"
+}
+
 function Invoke-Native {
     param(
         [Parameter(Mandatory)][string]$Exe,
         [Parameter(Mandatory)][string[]]$Arguments,
-        [int]$TimeoutSeconds = 0
+        [int]$TimeoutSeconds = 0,
+        [switch]$NoEcho
     )
-    Write-Host "==> $Exe $($Arguments -join ' ')"
+    if (-not $NoEcho) { Write-Host "==> $Exe $($Arguments -join ' ')" }
 
     $outFile = [System.IO.Path]::GetTempFileName()
     $errFile = [System.IO.Path]::GetTempFileName()
@@ -114,7 +162,8 @@ function Invoke-Claude {
 function Invoke-Profile {
     param([Parameter(Mandatory)][int]$Number)
 
-    $switch = Invoke-Native -Exe "cswap" -Arguments @("switch", "$Number")
+    Write-Host "==> cswap switch $(Format-Profile $Number)"
+    $switch = Invoke-Native -Exe "cswap" -Arguments @("switch", "$Number") -NoEcho
     if ($switch.ExitCode -ne 0) {
         $msg = if ($switch.StdErr.Trim()) { $switch.StdErr.Trim() } else { $switch.StdOut.Trim() }
         return [pscustomobject]@{ Success = $false; Message = "cswap switch failed: $msg" }
@@ -195,18 +244,24 @@ try {
         throw "no profiles found in ``cswap list --json``"
     }
 
+    foreach ($acct in $listing.accounts) {
+        $email = if ($acct.PSObject.Properties['email']) { $acct.email } else { $null }
+        if ($email) { $script:EmailByNumber[[string][int]$acct.number] = [string]$email }
+    }
+
     $original = $listing.activeAccountNumber
     if ($null -eq $original) {
         $active = $listing.accounts | Where-Object { $_.active } | Select-Object -First 1
         if ($active) { $original = [int]$active.number }
     }
 
-    Write-Host ("Found {0} profile(s): {1}" -f $numbers.Count, ($numbers -join ", "))
-    Write-Host "Original active profile: $original"
+    Write-Host ("Found {0} profile(s): {1}" -f $numbers.Count, (($numbers | ForEach-Object { Format-Profile $_ }) -join ", "))
+    Write-Host "Original active profile: $(Format-Profile $original)"
     Write-Host ""
 }
 catch {
     Write-Error $_.Exception.Message
+    Stop-Log
     exit 1
 }
 
@@ -217,14 +272,14 @@ try {
     foreach ($n in $numbers) {
         $r = Invoke-Profile -Number $n
         $results[[string]$n] = $r
-        Write-Host "profile ${n}: $($r.Message)"
+        Write-Host "Profile ${n}: $($r.Message)"
         Write-Host ""
     }
 }
 finally {
     if ($null -ne $original) {
-        Write-Host "==> restoring original active profile: cswap switch $original"
-        $restore = Invoke-Native -Exe "cswap" -Arguments @("switch", "$original")
+        Write-Host "==> restoring original active profile: cswap switch $(Format-Profile $original)"
+        $restore = Invoke-Native -Exe "cswap" -Arguments @("switch", "$original") -NoEcho
         if ($restore.ExitCode -eq 0) {
             $restoreOk = $true
             $restoreMsg = "OK"
@@ -242,21 +297,23 @@ finally {
     $allOk = $true
     foreach ($n in $numbers) {
         $key = [string]$n
+        $emailSuffix = if ($script:EmailByNumber.Contains($key)) { ", $($script:EmailByNumber[$key])" } else { "" }
         if ($results.Contains($key)) {
             $r = $results[$key]
-            Write-Host ("  profile {0}: {1}" -f $n, $r.Message)
+            Write-Host ("  Profile {0}: {1}{2}" -f $n, $r.Message, $emailSuffix)
             if (-not $r.Success) { $allOk = $false }
         }
         else {
-            Write-Host ("  profile {0}: not processed" -f $n)
+            Write-Host ("  Profile {0}: not processed{1}" -f $n, $emailSuffix)
             $allOk = $false
         }
     }
-    Write-Host ("  restore -> profile {0}: {1}" -f $original, $restoreMsg)
+    Write-Host ("  restore -> Profile {0}: {1}" -f (Format-Profile $original), $restoreMsg)
 
     if ($allOk -and $restoreOk -and $results.Count -eq $numbers.Count) {
         $exitCode = 0
     }
 }
 
+Stop-Log
 exit $exitCode
