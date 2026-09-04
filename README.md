@@ -14,8 +14,8 @@ disuse.
 2. For each profile: `cswap switch <n>`, then read Claude's `.credentials.json`
    (location below) and look at `claudeAiOauth.refreshTokenExpiresAt`:
    - **already expired** — print an error and move on to the next profile.
-   - **more than `REFRESH_WITHIN_DAYS` (4) days out** — nothing to do, reported as
-     `OK (fresh)`.
+   - **more than 4 days out** (`--within-days` / `-WithinDays`) — nothing to do,
+     reported as `OK (fresh)`.
    - **within 4 days** — run `claude -p "Reply exactly: Claude Code is OK"`, then
      re-read `.credentials.json` to confirm. If `refreshTokenExpiresAt` moved
      forward the token was rotated (`OK (refreshed, ...)`); if it did not, the
@@ -55,19 +55,33 @@ python ./cswap-token-refresher.py
 powershell -ExecutionPolicy Bypass -File "./cswap-token-refresher.ps1"
 ```
 
-### Configuration
+The two scripts take equivalent options and produce the same output.
 
-| Python constant       | PowerShell parameter | Default                            | Meaning                                       |
-| --------------------- | -------------------- | ---------------------------------- | --------------------------------------------- |
-| `REFRESH_WITHIN_DAYS` | `-WithinDays`        | `4`                                | Refresh when the token expires within N days. |
-| `CLAUDE_PROMPT`       | `-Prompt`            | `Reply exactly: Claude Code is OK` | Prompt passed to `claude -p`.                 |
-| `CLAUDE_TIMEOUT`      | `-TimeoutSeconds`    | `30`                               | Per-profile timeout for the `claude` call.    |
+### Options
+
+| Python flag            | PowerShell parameter | Default                            | Meaning                                                     |
+| ---------------------- | -------------------- | ---------------------------------- | ---------------------------------------------------------- |
+| `--within-days`        | `-WithinDays`        | `4`                                | Refresh when the token expires within N days.             |
+| `--prompt`             | `-Prompt`            | `Reply exactly: Claude Code is OK` | Prompt passed to `claude -p`.                             |
+| `--timeout`            | `-TimeoutSeconds`    | `30`                               | Per-profile timeout for the `claude` call, in seconds.   |
+| `--log-dir`            | `-LogDir`            | _(off)_                            | Also write this run's output to a dated file here.       |
+| `--log-retention-days` | `-LogRetentionDays`  | `14`                               | Delete log files older than this many days before a run. |
+
+### Logging
+
+With `--log-dir` / `-LogDir` set, each run is copied to
+`<dir>/cswap-refresher_YYYY-MM-DD_HHMMSS.log` (one file per run) as well as the
+console. At the start of every run, log files in that directory older than
+`--log-retention-days` / `-LogRetentionDays` (default 14) are deleted. Without
+the option nothing is written to disk. `setup.ps1` (below) turns this on by
+default, pointing at a `logs/` folder in the repo.
 
 ## Scheduling
 
 Run it once a day so no profile's refresh token lapses. The script is quiet on a
-healthy run and exits non-zero if anything failed, so pointing the output at a
-log file is enough to notice problems.
+healthy run and exits non-zero if anything failed, so keeping the output around
+is enough to notice problems — either redirect it (examples below) or use the
+built-in `--log-dir` / `-LogDir` option (see [Logging](#logging)).
 
 In every example below, replace `/path/to` (or `C:\path\to`) with the directory
 you cloned this repo into. `cron` and Task Scheduler both run with a minimal
@@ -140,31 +154,32 @@ journalctl --user -u cswap-refresher.service   # view past runs
 
 ### Windows (Task Scheduler)
 
-Register a daily task from an elevated PowerShell prompt. This uses the
-PowerShell script; swap in `python` + the `.py` path if you prefer.
+Run `setup.ps1` from a PowerShell prompt (no elevation needed for a per-user
+task):
 
 ```powershell
-$dir = "C:\path\to\cswap-token-refresher"
-
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$dir\cswap-token-refresher.ps1`"" `
-    -WorkingDirectory $dir
-
-$trigger = New-ScheduledTaskTrigger -Daily -At 9am
-
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
-    -DontStopOnIdleEnd -RunOnlyIfNetworkAvailable
-
-Register-ScheduledTask -TaskName "cswap token refresher" `
-    -Action $action -Trigger $trigger -Settings $settings `
-    -Description "Exercise cswap-managed Claude profile refresh tokens daily" `
-    -RunLevel Limited
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-By default the task runs only while you are logged on, which is usually what you
-want since `cswap` and `claude` act on your user profile. To run whether or not
-you are logged on, add `-User $env:USERNAME` and pass `-LogonType Password` (you
-will be prompted for your password) to `Register-ScheduledTask`.
+It registers — or replaces — a daily task named **cswap token refresher** that:
+
+- runs `cswap-token-refresher.ps1` from this folder at a time you choose
+  (prompted; default 4:30 AM),
+- catches up as soon as possible after a missed start (machine asleep / off),
+- only starts when a network connection is available,
+- is allowed to start and keep running on battery power,
+- launches hidden — no console window, and
+- logs each run to `logs\` in the repo, pruning files older than 14 days.
+
+When it finishes it offers to run the task once so you can confirm it works.
+
+Handy switches: `-At "6:00"` skips the time prompt, `-RunNow` triggers the task
+right after registering, `-NoLog` registers without logging,
+`-WindowStyle Minimized|Normal` changes the window, `-LogRetentionDays <n>`
+changes log retention. `Get-Help .\setup.ps1 -Detailed` has the rest.
+
+The task runs only while you are logged on, which is usually what you want since
+`cswap` and `claude` act on your user profile.
 
 Useful follow-ups:
 
@@ -174,12 +189,35 @@ Get-ScheduledTaskInfo -TaskName "cswap token refresher"   # LastRunTime / LastTa
 Unregister-ScheduledTask -TaskName "cswap token refresher" -Confirm:$false
 ```
 
-To capture output, point the action at a wrapper that redirects, e.g.
-`-Argument "-NoProfile -ExecutionPolicy Bypass -Command `"& '$dir\cswap-token-refresher.ps1' *>&1 | Out-File -Append '$dir\cswap-refresher.log'`""`.
+<details>
+<summary>Registering the task by hand instead</summary>
 
-If `cswap` / `claude` are not on the system `PATH` seen by the scheduler,
-prepend their folder inside such a wrapper (`$env:PATH = 'C:\Users\you\AppData\Roaming\npm;' + $env:PATH`)
+```powershell
+$dir = "C:\path\to\cswap-token-refresher"
+
+$action = New-ScheduledTaskAction -Execute "powershell.exe" `
+    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$dir\cswap-token-refresher.ps1`" -LogDir `"$dir\logs`" -LogRetentionDays 14" `
+    -WorkingDirectory $dir
+
+$trigger = New-ScheduledTaskTrigger -Daily -At "4:30AM"
+
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+    -DontStopOnIdleEnd -RunOnlyIfNetworkAvailable `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask -TaskName "cswap token refresher" `
+    -Action $action -Trigger $trigger -Settings $settings `
+    -Description "Exercise cswap-managed Claude profile refresh tokens daily" `
+    -RunLevel Limited
+```
+
+Swap in `python` + the `.py` path if you prefer. To run whether or not you are
+logged on, add `-User $env:USERNAME` and `-LogonType Password` (you will be
+prompted for your password) to `Register-ScheduledTask`. If `cswap` / `claude`
+are not on the `PATH` the scheduler sees, point the action at a wrapper that
+prepends their folder (`$env:PATH = 'C:\Users\you\AppData\Roaming\npm;' + $env:PATH`)
 before invoking the script.
+</details>
 
 ## Example output
 
